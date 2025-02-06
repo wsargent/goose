@@ -1,104 +1,119 @@
-#!/bin/bash
+#!/usr/bin/env node
 
-# Enable strict mode to exit on errors and unset variables
-set -euo pipefail
+const { execSync, spawn } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
-# Set log file
-LOG_FILE="/tmp/mcp.log"
+// Simple argument parser
+const args = process.argv.slice(2);
 
-# Clear the log file at the start
-> "$LOG_FILE"
+// Create a temporary directory for npm operations
+const getTempDir = () => {
+    const tempDir = path.join(os.tmpdir(), 'goose-npm-' + Math.random().toString(36).substring(7));
+    fs.mkdirSync(tempDir, { recursive: true });
+    return tempDir;
+};
 
-# Function for logging
-log() {
-    local MESSAGE="$1"
-    echo "$(date +'%Y-%m-%d %H:%M:%S') - $MESSAGE" | tee -a "$LOG_FILE"
+// Helper function to run npm install with SSL verification disabled
+const npmInstall = (pkg, cwd) => {
+    const npmCommand = `npm install ${pkg} --no-save --registry=https://registry.npmjs.org/ --strict-ssl=false`;
+    console.log('Running npm install command:', npmCommand);
+    return execSync(npmCommand, {
+        cwd,
+        stdio: 'inherit',
+        env: {
+            ...process.env,
+            npm_config_registry: 'https://registry.npmjs.org/',
+            npm_config_strict_ssl: 'false'
+        }
+    });
+};
+
+// Helper function to run MCP servers
+const runMcpServer = async (serverType) => {
+    try {
+        // Create temp directory and install the server
+        const tempDir = getTempDir();
+        fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({
+            name: 'temp',
+            version: '1.0.0'
+        }));
+        
+        console.log(`Installing ${serverType}...`);
+        const packageName = `@modelcontextprotocol/server-${serverType.replace('mcp-server-', '')}`;
+        npmInstall(packageName, tempDir);
+        
+        console.log(`Starting ${serverType}...`);
+        const serverPath = path.join(tempDir, 'node_modules', packageName, 'dist', 'index.js');
+        
+        // Log the server path and check if it exists
+        console.log('Server path:', serverPath);
+        console.log('Server path exists:', fs.existsSync(serverPath));
+        console.log('Contents of node_modules:', fs.readdirSync(path.join(tempDir, 'node_modules')));
+        
+        const child = spawn('node', [serverPath], {
+            stdio: 'inherit',
+            cwd: tempDir,
+            env: {
+                ...process.env,
+                npm_config_registry: 'https://registry.npmjs.org/',
+                npm_config_strict_ssl: 'false'
+            }
+        });
+        
+        child.on('error', (error) => {
+            console.error(`Failed to start ${serverType}:`, error);
+            process.exit(1);
+        });
+        
+        // Clean up temp directory when process exits
+        process.on('exit', () => {
+            try {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            } catch (error) {
+                console.error('Error cleaning up:', error);
+            }
+        });
+        
+        child.on('exit', (code) => {
+            process.exit(code);
+        });
+    } catch (error) {
+        console.error(`Error executing ${serverType}:`, error);
+        process.exit(1);
+    }
+};
+
+if (args[0] === '--from' && args[1] === 'toml-cli' && args[2] === 'toml') {
+    // Handle toml command
+    const tomlArgs = args.slice(2);
+    try {
+        // Create temp directory and install toml-cli
+        const tempDir = getTempDir();
+        fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({
+            name: 'temp',
+            version: '1.0.0'
+        }));
+        
+        npmInstall('toml-cli', tempDir);
+        
+        const result = execSync('node ' + path.join('node_modules', '.bin', 'toml') + ' ' + tomlArgs.join(' '), {
+            cwd: tempDir,
+            stdio: 'pipe',
+            encoding: 'utf8'
+        });
+        
+        console.log(result.trim());
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch (error) {
+        console.error('Error executing toml command:', error.message);
+        process.exit(1);
+    }
+} else if (args[0].startsWith('mcp-server-')) {
+    // Handle any mcp-server command
+    runMcpServer(args[0]);
+} else {
+    console.error('Unsupported uvx command');
+    process.exit(1);
 }
-
-# Trap errors and log them before exiting
-trap 'log "An error occurred. Exiting with status $?."' ERR
-
-log "Starting uvx setup script."
-
-# Ensure ~/.config/goose/mcp-hermit/bin exists
-log "Creating directory ~/.config/goose/mcp-hermit/bin if it does not exist."
-mkdir -p ~/.config/goose/mcp-hermit/bin
-
-# Change to the ~/.config/goose/mcp-hermit directory
-log "Changing to directory ~/.config/goose/mcp-hermit."
-cd ~/.config/goose/mcp-hermit
-
-# Check if hermit binary exists and download if not
-if [ ! -f ~/.config/goose/mcp-hermit/bin/hermit ]; then
-    log "Hermit binary not found. Downloading hermit binary."
-    curl -fsSL "https://github.com/cashapp/hermit/releases/download/stable/hermit-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').gz" \
-        | gzip -dc > ~/.config/goose/mcp-hermit/bin/hermit && chmod +x ~/.config/goose/mcp-hermit/bin/hermit
-    log "Hermit binary downloaded and made executable."
-else
-    log "Hermit binary already exists. Skipping download."
-fi
-
-
-log "setting hermit cache to be local for MCP servers"
-mkdir -p ~/.config/goose/mcp-hermit/cache
-export HERMIT_STATE_DIR=~/.config/goose/mcp-hermit/cache
-
-# Update PATH
-export PATH=~/.config/goose/mcp-hermit/bin:$PATH
-log "Updated PATH to include ~/.config/goose/mcp-hermit/bin."
-
-
-# Verify hermit installation
-log "Checking for hermit in PATH."
-which hermit >> "$LOG_FILE"
-
-# Initialize hermit
-log "Initializing hermit."
-hermit init >> "$LOG_FILE"
-
-# Install UV for python using hermit
-log "Installing UV with hermit."
-hermit install uv >> "$LOG_FILE"
-
-# Verify installations
-log "Verifying installation locations:"
-log "hermit: $(which hermit)"
-log "uv: $(which uv)"
-log "uvx: $(which uvx)"
-
-
-log "Checking for GOOSE_UV_REGISTRY and GOOSE_UV_CERT environment variables for custom python/pip/UV registry setup..."
-# Check if GOOSE_UV_REGISTRY is set and accessible
-if [ -n "${GOOSE_UV_REGISTRY:-}" ] && curl -s --head --fail "$GOOSE_UV_REGISTRY" > /dev/null; then
-    log "Checking custom goose registry availability: $GOOSE_UV_REGISTRY"
-    log "$GOOSE_UV_REGISTRY is accessible. Using it for UV registry."
-    export UV_INDEX_URL="$GOOSE_UV_REGISTRY"
-
-    if [ -n "${GOOSE_UV_CERT:-}" ] && curl -s --head --fail "$GOOSE_UV_CERT" > /dev/null; then
-        log "Downloading certificate from: $GOOSE_UV_CERT"
-        curl -sSL -o ~/.config/goose/mcp-hermit/cert.pem "$GOOSE_UV_CERT"
-        if [ $? -eq 0 ]; then
-            log "Certificate downloaded successfully."
-            export SSL_CERT_FILE=~/.config/goose/mcp-hermit/cert.pem
-        else
-            log "Unable to download the certificate. Skipping certificate setup."
-        fi
-    else
-        log "GOOSE_UV_CERT is either not set or not accessible. Skipping certificate setup."
-    fi
-
-else
-    log "GOOSE_UV_REGISTRY is either not set or not accessible. Falling back to default pip registry."
-    export UV_INDEX_URL="https://pypi.org/simple"
-fi
-
-
-
-
-
-
-# Final step: Execute uvx with passed arguments
-log "Executing 'uvx' command with arguments: $*"
-uvx "$@" || log "Failed to execute 'uvx' with arguments: $*"
-
-log "uvx setup script completed successfully."

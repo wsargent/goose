@@ -93,12 +93,20 @@ make-ui-windows:
         mkdir -p ./ui/desktop/src/bin; \
         cp -f ./target/x86_64-pc-windows-gnu/release/goosed.exe ./ui/desktop/src/bin/; \
         cp -f ./target/x86_64-pc-windows-gnu/release/*.dll ./ui/desktop/src/bin/; \
+        echo "Setting up Windows tools..."; \
+        cd ui/desktop && node scripts/setup-windows-tools.js || exit 1; \
         echo "Building Windows package..."; \
-        cd ui/desktop && \
-        npm run bundle:windows && \
-        mkdir -p out/Goose-win32-x64/resources/bin && \
-        cp -f src/bin/goosed.exe out/Goose-win32-x64/resources/bin/ && \
-        cp -f src/bin/*.dll out/Goose-win32-x64/resources/bin/; \
+        if [ -f "src/bin/uvx.bat" ] && [ -f "src/bin/npx.bat" ]; then \
+            npm run bundle:windows && \
+            mkdir -p out/Goose-win32-x64/resources/bin && \
+            cp -f src/bin/goosed.exe out/Goose-win32-x64/resources/bin/ && \
+            cp -f src/bin/*.dll out/Goose-win32-x64/resources/bin/ && \
+            cp -f src/bin/*.bat out/Goose-win32-x64/resources/bin/ && \
+            cp -f src/bin/*.cmd out/Goose-win32-x64/resources/bin/; \
+        else \
+            echo "Windows tools setup failed - missing required files"; \
+            exit 1; \
+        fi \
     else \
         echo "Windows binary not found."; \
         exit 1; \
